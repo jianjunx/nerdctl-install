@@ -23,7 +23,7 @@ SERVICE_FILE="$SERVICE_DIR/containerd-rootless.service"
 # 自动检测架构
 ARCH=$(uname -m)
 case $ARCH in
-    x86_64) ARCH="x86_64";;
+    x86_64|amd64) ARCH="amd64";;
     aarch64|arm64) ARCH="arm64";;
     *) echo "不支持的架构: $ARCH，退出。"; exit 1;;
 esac
@@ -134,7 +134,7 @@ echo
 # 下载并安装 runc
 # runc 使用不同的文件命名格式
 case $ARCH in
-    x86_64) RUNC_FILE="runc.amd64";;
+    amd64) RUNC_FILE="runc.amd64";;
     arm64) RUNC_FILE="runc.arm64";;
     *) echo "不支持的架构: $ARCH"; exit 1;;
 esac
