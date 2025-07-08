@@ -31,6 +31,10 @@ esac
 # 创建安装目录
 mkdir -p "$BIN_DIR" "$DATA_DIR" "$SERVICE_DIR"
 
+# 设置PATH和CNI_PATH，确保脚本中能找到安装的工具
+export PATH="$BIN_DIR:$PATH"
+export CNI_PATH="$USER_HOME/.local/libexec/cni"
+
 # 通用下载函数
 download_file() {
     local url="$1"
@@ -61,7 +65,7 @@ else
     get_latest_version() {
         local repo="$1"
         local version
-        echo "正在获取 $repo 的最新版本..."
+        echo "正在获取 $repo 的最新版本..." >&2
         version=$(curl -s --fail --max-time 30 "https://api.github.com/repos/$repo/releases/latest" | \
                   grep -o '"tag_name": *"[^"]*"' | sed -E 's/.*"([^"]+)".*/\1/')
         if [ -z "$version" ]; then
@@ -73,10 +77,6 @@ else
     NERDCTL_VERSION=$(get_latest_version "containerd/nerdctl")
     echo "nerdctl 最新版本: $NERDCTL_VERSION"
 fi
-CONTAINERD_VERSION=$(get_latest_version "containerd/containerd")
-echo "containerd 最新版本: $CONTAINERD_VERSION"
-RUNC_VERSION=$(get_latest_version "opencontainers/runc")
-echo "runc 最新版本: $RUNC_VERSION"
 echo "版本信息获取完成"
 echo
 
@@ -97,54 +97,43 @@ else
     echo "未知的包管理器，跳过依赖安装。"
 fi
 
-# 下载并安装 nerdctl
+# 下载并安装 nerdctl-full（包含所有依赖项）
 # 去除版本号中的 v 前缀用于文件名
 NERDCTL_VERSION_CLEAN="${NERDCTL_VERSION#v}"
-NERDCTL_TAR="nerdctl-$NERDCTL_VERSION_CLEAN-linux-$ARCH.tar.gz"
-NERDCTL_URL="https://github.com/containerd/nerdctl/releases/download/$NERDCTL_VERSION/$NERDCTL_TAR"
+NERDCTL_FULL_TAR="nerdctl-full-$NERDCTL_VERSION_CLEAN-linux-$ARCH.tar.gz"
+NERDCTL_FULL_URL="https://github.com/containerd/nerdctl/releases/download/$NERDCTL_VERSION/$NERDCTL_FULL_TAR"
 
-download_file "$NERDCTL_URL" "$NERDCTL_TAR" "nerdctl $NERDCTL_VERSION" || exit 1
+download_file "$NERDCTL_FULL_URL" "$NERDCTL_FULL_TAR" "nerdctl-full $NERDCTL_VERSION" || exit 1
 
-echo "📦 解压 nerdctl..."
-tar -xzf "$NERDCTL_TAR" -C "$BIN_DIR" || {
-    echo "❌ 错误：解压 nerdctl 失败" >&2
+echo "📦 解压 nerdctl-full（包含所有组件）..."
+# 创建临时目录解压
+TEMP_DIR=$(mktemp -d)
+tar -xzf "$NERDCTL_FULL_TAR" -C "$TEMP_DIR" || {
+    echo "❌ 错误：解压 nerdctl-full 失败" >&2
     exit 1
 }
-rm -f "$NERDCTL_TAR"
-echo "✅ nerdctl 安装完成"
-echo
 
-# 下载并安装 containerd
-# 去除版本号中的 v 前缀用于文件名
-CONTAINERD_VERSION_CLEAN="${CONTAINERD_VERSION#v}"
-CONTAINERD_TAR="containerd-$CONTAINERD_VERSION_CLEAN-linux-$ARCH.tar.gz"
-CONTAINERD_URL="https://github.com/containerd/containerd/releases/download/$CONTAINERD_VERSION/$CONTAINERD_TAR"
-
-download_file "$CONTAINERD_URL" "$CONTAINERD_TAR" "containerd $CONTAINERD_VERSION" || exit 1
-
-echo "📦 解压 containerd..."
-tar -xzf "$CONTAINERD_TAR" -C "$BIN_DIR" || {
-    echo "❌ 错误：解压 containerd 失败" >&2
+# 复制二进制文件到目标目录
+echo "📂 安装组件到 $BIN_DIR..."
+cp "$TEMP_DIR/bin/"* "$BIN_DIR/" || {
+    echo "❌ 错误：复制文件失败" >&2
     exit 1
 }
-rm -f "$CONTAINERD_TAR"
-echo "✅ containerd 安装完成"
-echo
 
-# 下载并安装 runc
-# runc 使用不同的文件命名格式
-case $ARCH in
-    amd64) RUNC_FILE="runc.amd64";;
-    arm64) RUNC_FILE="runc.arm64";;
-    *) echo "不支持的架构: $ARCH"; exit 1;;
-esac
-RUNC_URL="https://github.com/opencontainers/runc/releases/download/$RUNC_VERSION/$RUNC_FILE"
+# 设置 CNI 插件路径
+CNI_DIR="$USER_HOME/.local/libexec/cni"
+mkdir -p "$CNI_DIR"
+if [ -d "$TEMP_DIR/libexec/cni" ]; then
+    cp "$TEMP_DIR/libexec/cni/"* "$CNI_DIR/" || {
+        echo "❌ 错误：复制 CNI 插件失败" >&2
+        exit 1
+    }
+fi
 
-download_file "$RUNC_URL" "$BIN_DIR/runc" "runc $RUNC_VERSION" || exit 1
-
-echo "🔧 设置 runc 权限..."
-chmod +x "$BIN_DIR/runc"
-echo "✅ runc 安装完成"
+# 清理临时文件
+rm -rf "$TEMP_DIR" "$NERDCTL_FULL_TAR"
+echo "✅ nerdctl-full 安装完成"
+echo "✅ 已安装：nerdctl、containerd、runc、RootlessKit、CNI插件等"
 echo
 
 # 初始化 rootless containerd
@@ -191,7 +180,7 @@ add_env_vars() {
     local config_file="$1"
     if [ -f "$config_file" ]; then
         echo "export PATH=$BIN_DIR:\$PATH" >> "$config_file"
-        echo "export CONTAINERD_ADDRESS=\$HOME/.local/run/containerd.sock" >> "$config_file"
+        echo "export CNI_PATH=\$HOME/.local/libexec/cni" >> "$config_file"
         echo "已添加环境变量到 $config_file"
     fi
 }
@@ -210,7 +199,7 @@ elif [ "$SHELL_TYPE" = "bash" ]; then
 else
     echo "检测到非 Bash/Zsh shell ($SHELL_TYPE)，请手动执行以下命令："
     echo "export PATH=$BIN_DIR:\$PATH"
-    echo "export CONTAINERD_ADDRESS=\$HOME/.local/run/containerd.sock"
+    echo "export CNI_PATH=\$HOME/.local/libexec/cni"
 fi
 
 # 验证安装
@@ -218,27 +207,29 @@ echo "=========================================="
 echo "🔍 验证安装结果"
 echo "=========================================="
 
-echo "验证 nerdctl..."
+echo "验证安装的组件..."
 if nerdctl --version; then
     echo "✅ nerdctl 验证成功"
 else
     echo "⚠️  警告：nerdctl 验证失败" >&2
 fi
-echo
 
-echo "验证 containerd..."
 if containerd --version; then
     echo "✅ containerd 验证成功"
 else
     echo "⚠️  警告：containerd 验证失败" >&2
 fi
-echo
 
-echo "验证 runc..."
 if runc --version; then
-    echo "✅ runc 验证成功"
+    echo "✅ runc 验证成功"  
 else
     echo "⚠️  警告：runc 验证失败" >&2
+fi
+
+if rootlesskit --version; then
+    echo "✅ rootlesskit 验证成功"
+else
+    echo "⚠️  警告：rootlesskit 验证失败" >&2
 fi
 echo
 
@@ -278,6 +269,14 @@ echo "🎉 安装完成！"
 echo "=========================================="
 echo "感谢使用 nerdctl 安装脚本！"
 echo
+echo "📦 已安装的组件："
+echo "  • nerdctl (Docker-compatible CLI)"
+echo "  • containerd (容器运行时)"
+echo "  • runc (OCI运行时)"
+echo "  • RootlessKit (rootless容器支持)"
+echo "  • CNI插件 (网络支持)"
+echo "  • BuildKit (镜像构建)"
+echo
 echo "📖 使用指南："
 echo "  • 运行容器: nerdctl run -it --rm alpine"
 echo "  • 查看帮助: nerdctl --help"
@@ -286,5 +285,6 @@ echo
 echo "💡 提示："
 echo "  • 如果命令找不到，请先执行 source ~/.bashrc 或 source ~/.zshrc"
 echo "  • 确保已配置 subuid/subgid（如上所示）"
+echo "  • rootless模式已就绪，可直接使用无需sudo"
 echo "  • 有问题请查看 README.md 或提交 issue"
 echo "=========================================="
