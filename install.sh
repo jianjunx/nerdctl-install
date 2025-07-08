@@ -317,36 +317,55 @@ else
     echo "⚠️  警告：runc 验证失败" >&2
 fi
 
-if rootlesskit --version; then
-    echo "✅ rootlesskit 验证成功"
+if [ "$IS_ROOT_USER" = "false" ]; then
+    if rootlesskit --version; then
+        echo "✅ rootlesskit 验证成功"
+    else
+        echo "⚠️  警告：rootlesskit 验证失败" >&2
+    fi
 else
-    echo "⚠️  警告：rootlesskit 验证失败" >&2
+    echo "ℹ️  rootlesskit 跳过验证（系统模式不需要）"
 fi
 echo
 
 
 
-# 是否将 nerdctl 软链接为 docker
+# 询问是否创建 docker 软链接（适用于所有用户类型）
 echo
-echo "是否将 nerdctl 软链接为 docker？(y/N)"
+echo "=========================================="
+echo "🔗 Docker 兼容性设置"
+echo "=========================================="
+if [ "$IS_ROOT_USER" = "true" ]; then
+    echo "是否将 nerdctl 软链接为 docker？（系统级，所有用户可用）"
+else
+    echo "是否将 nerdctl 软链接为 docker？（用户级，仅当前用户可用）"
+fi
+echo "这样可以使用 'docker' 命令来调用 nerdctl"
+echo "注意：可能与原生 Docker 行为有差异"
+echo
+echo -n "请选择 (y/N): "
 read -r answer
 
 if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
     DOCKER_LINK="$BIN_DIR/docker"
     if [ -e "$DOCKER_LINK" ]; then
-        echo "警告：$DOCKER_LINK 已存在，将被覆盖。"
+        echo "⚠️  警告：$DOCKER_LINK 已存在，将被覆盖。"
     fi
     if ln -sf "$BIN_DIR/nerdctl" "$DOCKER_LINK"; then
-        echo "已创建软链接：$DOCKER_LINK -> $BIN_DIR/nerdctl"
-        echo "警告：此操作可能导致与原生 Docker 的行为不一致，请确认是否需要。"
-        if [ "$IS_ROOT_USER" = "false" ]; then
-            echo "请确保 $BIN_DIR 在您的 PATH 环境变量中。"
+        echo "✅ 已创建软链接：$DOCKER_LINK -> $BIN_DIR/nerdctl"
+        if [ "$IS_ROOT_USER" = "true" ]; then
+            echo "🌍 系统级软链接已创建，所有用户都可以使用 'docker' 命令"
+        else
+            echo "👤 用户级软链接已创建，当前用户可以使用 'docker' 命令"
+            echo "💡 请确保 $BIN_DIR 在您的 PATH 环境变量中"
         fi
+        echo "⚠️  注意：此操作可能导致与原生 Docker 的行为不一致"
     else
-        echo "错误：创建软链接失败" >&2
+        echo "❌ 错误：创建软链接失败" >&2
     fi
 else
-    echo "未创建软链接，您可以通过 nerdctl 命令使用容器功能。"
+    echo "❌ 未创建软链接"
+    echo "💡 您可以通过 'nerdctl' 命令使用容器功能"
 fi
 
 # 根据用户类型提供不同的配置提示
