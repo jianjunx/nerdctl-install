@@ -38,11 +38,11 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/nerdctl-install.git
+git clone https://github.com/jianjunx/nerdctl-install.git
 cd nerdctl-install
 
 # 或直接下载脚本
-curl -O https://raw.githubusercontent.com/your-username/nerdctl-install/main/install.sh
+curl -O https://raw.githubusercontent.com/jianjunx/nerdctl-install/main/install.sh
 ```
 
 ### 2. 运行安装脚本

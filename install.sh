@@ -12,7 +12,7 @@ SERVICE_FILE="$SERVICE_DIR/containerd-rootless.service"
 ARCH=$(uname -m)
 case $ARCH in
     x86_64) ARCH="x86_64";;
-    aarch64) ARCH="arm64";;
+    aarch64|arm64) ARCH="arm64";;
     *) echo "不支持的架构: $ARCH，退出。"; exit 1;;
 esac
 
@@ -20,9 +20,24 @@ esac
 mkdir -p "$BIN_DIR" "$DATA_DIR" "$SERVICE_DIR"
 
 # 获取最新版本
-NERDCTL_VERSION=$(curl -s https://api.github.com/repos/containerd/nerdctl/releases/latest | grep -o '"tag_name": *"[^"]*"' | sed -E 's/.*"([^"]+)".*/\1/')
-CONTAINERD_VERSION=$(curl -s https://api.github.com/repos/containerd/containerd/releases/latest | grep -o '"tag_name": *"[^"]*"' | sed -E 's/.*"([^"]+)".*/\1/')
-RUNC_VERSION=$(curl -s https://api.github.com/repos/opencontainers/runc/releases/latest | grep -o '"tag_name": *"[^"]*"' | sed -E 's/.*"([^"]+)".*/\1/')
+if [ -n "$NERDCTL_VERSION_OVERRIDE" ]; then
+    NERDCTL_VERSION="$NERDCTL_VERSION_OVERRIDE"
+else
+    get_latest_version() {
+        local repo="$1"
+        local version
+        version=$(curl -s --fail --max-time 30 "https://api.github.com/repos/$repo/releases/latest" | \
+                  grep -o '"tag_name": *"[^"]*"' | sed -E 's/.*"([^"]+)".*/\1/')
+        if [ -z "$version" ]; then
+            echo "错误：无法获取 $repo 的最新版本" >&2
+            exit 1
+        fi
+        echo "$version"
+    }
+    NERDCTL_VERSION=$(get_latest_version "containerd/nerdctl")
+fi
+CONTAINERD_VERSION=$(get_latest_version "containerd/containerd")
+RUNC_VERSION=$(get_latest_version "opencontainers/runc")
 
 # 安装依赖
 echo "安装依赖项..."
@@ -33,6 +48,10 @@ elif command -v dnf &> /dev/null; then
     sudo dnf install -y fuse-overlayfs slirp4netns
 elif command -v pacman &> /dev/null; then
     sudo pacman -S --noconfirm fuse-overlayfs slirp4netns
+elif command -v yum &> /dev/null; then
+    sudo yum install -y fuse-overlayfs slirp4netns
+elif command -v brew &> /dev/null; then
+    sudo brew install fuse-overlayfs slirp4netns
 else
     echo "未知的包管理器，跳过依赖安装。"
 fi
@@ -40,26 +59,48 @@ fi
 # 下载并安装 nerdctl
 echo "下载 nerdctl $NERDCTL_VERSION..."
 NERDCTL_TAR="nerdctl-$NERDCTL_VERSION-linux-$ARCH.tar.gz"
-curl -L "https://github.com/containerd/nerdctl/releases/download/$NERDCTL_VERSION/$NERDCTL_TAR" -o "$NERDCTL_TAR"
-tar -xzf "$NERDCTL_TAR" -C "$BIN_DIR"
+curl -L --fail "https://github.com/containerd/nerdctl/releases/download/$NERDCTL_VERSION/$NERDCTL_TAR" -o "$NERDCTL_TAR" || {
+    echo "错误：下载 nerdctl 失败" >&2
+    exit 1
+}
+tar -xzf "$NERDCTL_TAR" -C "$BIN_DIR" || {
+    echo "错误：解压 nerdctl 失败" >&2
+    exit 1
+}
 rm -f "$NERDCTL_TAR"
 
 # 下载并安装 containerd
 echo "下载 containerd $CONTAINERD_VERSION..."
 CONTAINERD_TAR="containerd-$CONTAINERD_VERSION-linux-$ARCH.tar.gz"
-curl -L "https://github.com/containerd/containerd/releases/download/$CONTAINERD_VERSION/$CONTAINERD_TAR" -o "$CONTAINERD_TAR"
-tar -xzf "$CONTAINERD_TAR" -C "$BIN_DIR"
+curl -L --fail "https://github.com/containerd/containerd/releases/download/$CONTAINERD_VERSION/$CONTAINERD_TAR" -o "$CONTAINERD_TAR" || {
+    echo "错误：下载 containerd 失败" >&2
+    exit 1
+}
+tar -xzf "$CONTAINERD_TAR" -C "$BIN_DIR" || {
+    echo "错误：解压 containerd 失败" >&2
+    exit 1
+}
 rm -f "$CONTAINERD_TAR"
 
 # 下载并安装 runc
 echo "下载 runc $RUNC_VERSION..."
 RUNC_TAR="runc.$ARCH"
-curl -L "https://github.com/opencontainers/runc/releases/download/$RUNC_VERSION/$RUNC_TAR" -o "$BIN_DIR/runc"
+curl -L --fail "https://github.com/opencontainers/runc/releases/download/$RUNC_VERSION/$RUNC_TAR" -o "$BIN_DIR/runc" || {
+    echo "错误：下载 runc 失败" >&2
+    exit 1
+}
 chmod +x "$BIN_DIR/runc"
 
 # 初始化 rootless containerd
 echo "初始化 rootless containerd..."
-"$BIN_DIR/containerd-rootless-setuptool.sh" install
+if [ ! -f "$BIN_DIR/containerd-rootless-setuptool.sh" ]; then
+    echo "错误：找不到 containerd-rootless-setuptool.sh" >&2
+    exit 1
+fi
+"$BIN_DIR/containerd-rootless-setuptool.sh" install || {
+    echo "错误：初始化 rootless containerd 失败" >&2
+    exit 1
+}
 
 # 创建 systemd 用户服务
 echo "创建 systemd 用户服务..."
@@ -118,18 +159,31 @@ fi
 
 # 验证安装
 echo "安装完成，验证..."
-nerdctl --version
-containerd --version
-runc --version
+echo "验证 nerdctl..."
+if ! nerdctl --version; then
+    echo "警告：nerdctl 验证失败" >&2
+fi
+
+echo "验证 containerd..."
+if ! containerd --version; then
+    echo "警告：containerd 验证失败" >&2
+fi
+
+echo "验证 runc..."
+if ! runc --version; then
+    echo "警告：runc 验证失败" >&2
+fi
 
 # 测试运行（新增交互式选项）
 echo
 echo "是否运行测试容器（nerdctl run --rm hello-world）？(Y/n)"
 read -r answer
 
-if [[ "$answer" =~ ^[Yy]$ ]]; then
+if [[ -z "$answer" || "$answer" =~ ^[Yy]$ ]]; then
     echo "正在运行测试容器..."
-    nerdctl run --rm hello-world
+    if ! nerdctl run --rm hello-world; then
+        echo "警告：测试容器运行失败，但安装可能仍然成功" >&2
+    fi
 else
     echo "跳过测试容器。"
 fi
@@ -144,10 +198,13 @@ if [[ "$answer" =~ ^[Yy]$ ]]; then
     if [ -e "$DOCKER_LINK" ]; then
         echo "警告：$DOCKER_LINK 已存在，将被覆盖。"
     fi
-    ln -sf "$BIN_DIR/nerdctl" "$DOCKER_LINK"
-    echo "已创建软链接：$DOCKER_LINK -> $BIN_DIR/nerdctl"
-    echo "警告：此操作可能导致与原生 Docker 的行为不一致，请确认是否需要。"
-    echo "请确保 $BIN_DIR 在您的 PATH 环境变量中。"
+    if ln -sf "$BIN_DIR/nerdctl" "$DOCKER_LINK"; then
+        echo "已创建软链接：$DOCKER_LINK -> $BIN_DIR/nerdctl"
+        echo "警告：此操作可能导致与原生 Docker 的行为不一致，请确认是否需要。"
+        echo "请确保 $BIN_DIR 在您的 PATH 环境变量中。"
+    else
+        echo "错误：创建软链接失败" >&2
+    fi
 else
     echo "未创建软链接，您可以通过 nerdctl 命令使用容器功能。"
 fi
