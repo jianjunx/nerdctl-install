@@ -1,5 +1,17 @@
 #!/bin/bash
 
+# 在脚本开头添加 macOS 检测
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    echo "错误：此脚本仅支持 Linux 系统。"
+    echo "在 macOS 上使用容器，请选择："
+    echo "1. 安装 Docker Desktop: brew install --cask docker"
+    echo "2. 使用 Lima + nerdctl:"
+    echo "   brew install lima"
+    echo "   limactl start"
+    echo "   lima nerdctl run hello-world"
+    exit 1
+fi
+
 # 获取当前用户信息
 USER_NAME=$(whoami)
 USER_HOME="$HOME"
