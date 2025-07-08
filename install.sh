@@ -31,13 +31,37 @@ esac
 # 创建安装目录
 mkdir -p "$BIN_DIR" "$DATA_DIR" "$SERVICE_DIR"
 
+# 通用下载函数
+download_file() {
+    local url="$1"
+    local output="$2"
+    local description="$3"
+    
+    echo "=========================================="
+    echo "下载 $description"
+    echo "来源: $url"
+    echo "目标: $output"
+    echo "=========================================="
+    
+    if curl -L --fail --progress-bar "$url" -o "$output"; then
+        echo "✅ $description 下载完成"
+        return 0
+    else
+        echo "❌ 错误：$description 下载失败" >&2
+        return 1
+    fi
+}
+
 # 获取最新版本
+echo "获取最新版本信息..."
 if [ -n "$NERDCTL_VERSION_OVERRIDE" ]; then
     NERDCTL_VERSION="$NERDCTL_VERSION_OVERRIDE"
+    echo "使用指定的 nerdctl 版本: $NERDCTL_VERSION"
 else
     get_latest_version() {
         local repo="$1"
         local version
+        echo "正在获取 $repo 的最新版本..."
         version=$(curl -s --fail --max-time 30 "https://api.github.com/repos/$repo/releases/latest" | \
                   grep -o '"tag_name": *"[^"]*"' | sed -E 's/.*"([^"]+)".*/\1/')
         if [ -z "$version" ]; then
@@ -47,9 +71,14 @@ else
         echo "$version"
     }
     NERDCTL_VERSION=$(get_latest_version "containerd/nerdctl")
+    echo "nerdctl 最新版本: $NERDCTL_VERSION"
 fi
 CONTAINERD_VERSION=$(get_latest_version "containerd/containerd")
+echo "containerd 最新版本: $CONTAINERD_VERSION"
 RUNC_VERSION=$(get_latest_version "opencontainers/runc")
+echo "runc 最新版本: $RUNC_VERSION"
+echo "版本信息获取完成"
+echo
 
 # 安装依赖
 echo "安装依赖项..."
@@ -69,39 +98,54 @@ else
 fi
 
 # 下载并安装 nerdctl
-echo "下载 nerdctl $NERDCTL_VERSION..."
-NERDCTL_TAR="nerdctl-$NERDCTL_VERSION-linux-$ARCH.tar.gz"
-curl -L --fail "https://github.com/containerd/nerdctl/releases/download/$NERDCTL_VERSION/$NERDCTL_TAR" -o "$NERDCTL_TAR" || {
-    echo "错误：下载 nerdctl 失败" >&2
-    exit 1
-}
+# 去除版本号中的 v 前缀用于文件名
+NERDCTL_VERSION_CLEAN="${NERDCTL_VERSION#v}"
+NERDCTL_TAR="nerdctl-$NERDCTL_VERSION_CLEAN-linux-$ARCH.tar.gz"
+NERDCTL_URL="https://github.com/containerd/nerdctl/releases/download/$NERDCTL_VERSION/$NERDCTL_TAR"
+
+download_file "$NERDCTL_URL" "$NERDCTL_TAR" "nerdctl $NERDCTL_VERSION" || exit 1
+
+echo "📦 解压 nerdctl..."
 tar -xzf "$NERDCTL_TAR" -C "$BIN_DIR" || {
-    echo "错误：解压 nerdctl 失败" >&2
+    echo "❌ 错误：解压 nerdctl 失败" >&2
     exit 1
 }
 rm -f "$NERDCTL_TAR"
+echo "✅ nerdctl 安装完成"
+echo
 
 # 下载并安装 containerd
-echo "下载 containerd $CONTAINERD_VERSION..."
-CONTAINERD_TAR="containerd-$CONTAINERD_VERSION-linux-$ARCH.tar.gz"
-curl -L --fail "https://github.com/containerd/containerd/releases/download/$CONTAINERD_VERSION/$CONTAINERD_TAR" -o "$CONTAINERD_TAR" || {
-    echo "错误：下载 containerd 失败" >&2
-    exit 1
-}
+# 去除版本号中的 v 前缀用于文件名
+CONTAINERD_VERSION_CLEAN="${CONTAINERD_VERSION#v}"
+CONTAINERD_TAR="containerd-$CONTAINERD_VERSION_CLEAN-linux-$ARCH.tar.gz"
+CONTAINERD_URL="https://github.com/containerd/containerd/releases/download/$CONTAINERD_VERSION/$CONTAINERD_TAR"
+
+download_file "$CONTAINERD_URL" "$CONTAINERD_TAR" "containerd $CONTAINERD_VERSION" || exit 1
+
+echo "📦 解压 containerd..."
 tar -xzf "$CONTAINERD_TAR" -C "$BIN_DIR" || {
-    echo "错误：解压 containerd 失败" >&2
+    echo "❌ 错误：解压 containerd 失败" >&2
     exit 1
 }
 rm -f "$CONTAINERD_TAR"
+echo "✅ containerd 安装完成"
+echo
 
 # 下载并安装 runc
-echo "下载 runc $RUNC_VERSION..."
-RUNC_TAR="runc.$ARCH"
-curl -L --fail "https://github.com/opencontainers/runc/releases/download/$RUNC_VERSION/$RUNC_TAR" -o "$BIN_DIR/runc" || {
-    echo "错误：下载 runc 失败" >&2
-    exit 1
-}
+# runc 使用不同的文件命名格式
+case $ARCH in
+    x86_64) RUNC_FILE="runc.amd64";;
+    arm64) RUNC_FILE="runc.arm64";;
+    *) echo "不支持的架构: $ARCH"; exit 1;;
+esac
+RUNC_URL="https://github.com/opencontainers/runc/releases/download/$RUNC_VERSION/$RUNC_FILE"
+
+download_file "$RUNC_URL" "$BIN_DIR/runc" "runc $RUNC_VERSION" || exit 1
+
+echo "🔧 设置 runc 权限..."
 chmod +x "$BIN_DIR/runc"
+echo "✅ runc 安装完成"
+echo
 
 # 初始化 rootless containerd
 echo "初始化 rootless containerd..."
@@ -170,37 +214,37 @@ else
 fi
 
 # 验证安装
-echo "安装完成，验证..."
+echo "=========================================="
+echo "🔍 验证安装结果"
+echo "=========================================="
+
 echo "验证 nerdctl..."
-if ! nerdctl --version; then
-    echo "警告：nerdctl 验证失败" >&2
+if nerdctl --version; then
+    echo "✅ nerdctl 验证成功"
+else
+    echo "⚠️  警告：nerdctl 验证失败" >&2
 fi
+echo
 
 echo "验证 containerd..."
-if ! containerd --version; then
-    echo "警告：containerd 验证失败" >&2
+if containerd --version; then
+    echo "✅ containerd 验证成功"
+else
+    echo "⚠️  警告：containerd 验证失败" >&2
 fi
+echo
 
 echo "验证 runc..."
-if ! runc --version; then
-    echo "警告：runc 验证失败" >&2
-fi
-
-# 测试运行（新增交互式选项）
-echo
-echo "是否运行测试容器（nerdctl run --rm hello-world）？(Y/n)"
-read -r answer
-
-if [[ -z "$answer" || "$answer" =~ ^[Yy]$ ]]; then
-    echo "正在运行测试容器..."
-    if ! nerdctl run --rm hello-world; then
-        echo "警告：测试容器运行失败，但安装可能仍然成功" >&2
-    fi
+if runc --version; then
+    echo "✅ runc 验证成功"
 else
-    echo "跳过测试容器。"
+    echo "⚠️  警告：runc 验证失败" >&2
 fi
+echo
 
-# 新增功能：是否将 nerdctl 软链接为 docker
+
+
+# 是否将 nerdctl 软链接为 docker
 echo
 echo "是否将 nerdctl 软链接为 docker？(y/N)"
 read -r answer
@@ -229,5 +273,18 @@ echo "echo '$USER_NAME:100000:65536' | sudo tee /etc/subgid"
 echo "并调整内核参数（需 root 权限）："
 echo "sudo sysctl user.max_user_namespaces=28633"
 
+echo "=========================================="
+echo "🎉 安装完成！"
+echo "=========================================="
+echo "感谢使用 nerdctl 安装脚本！"
 echo
-echo "安装完成。"
+echo "📖 使用指南："
+echo "  • 运行容器: nerdctl run -it --rm alpine"
+echo "  • 查看帮助: nerdctl --help"
+echo "  • 查看版本: nerdctl --version"
+echo
+echo "💡 提示："
+echo "  • 如果命令找不到，请先执行 source ~/.bashrc 或 source ~/.zshrc"
+echo "  • 确保已配置 subuid/subgid（如上所示）"
+echo "  • 有问题请查看 README.md 或提交 issue"
+echo "=========================================="

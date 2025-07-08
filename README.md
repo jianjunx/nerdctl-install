@@ -43,6 +43,9 @@ cd nerdctl-install
 
 # 或直接下载脚本
 curl -O https://raw.githubusercontent.com/jianjunx/nerdctl-install/main/install.sh
+
+
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/jianjunx/nerdctl-install/main/install.sh)"
 ```
 
 ### 2. 运行安装脚本
